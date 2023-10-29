@@ -29,7 +29,7 @@ However, there may be missing dependencies, so you may have to install those man
 
 ## Usage
 
-To install a program or library, you need to provide a name for it, a source (filename, source directory path or URL). For example, to install an up-to-date version of CMake, you can run:
+To install a program or library, you need to provide a name for it and a source (filename, source directory path or URL). For example, to install an up-to-date version of CMake, you can run:
 
 ```bash
  stow-install --name=cmake-3.27 --source=https://github.com/Kitware/CMake/releases/download/v3.27.7/cmake-3.27.7.tar.gz
