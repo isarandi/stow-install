@@ -1,0 +1,30 @@
+# Comments and blank lines are allowed.
+
+RCS
+.+,v
+
+CVS
+\.\#.+  # CVS conflict files / emacs lock files
+\.cvsignore
+
+\.svn
+_darcs
+\.hg
+
+\.git
+\.gitignore
+
+.+~     # emacs backup files
+\#.*\#  # emacs autosave files
+
+^/README.*
+^/LICENSE.*
+^/COPYING
+
+# local command histories
+\.history.*  
+
+# The following line is important, as multiple packages like to write
+# files with the same name into share/info/dir, resulting in conflicts.
+# It's safe to ignore them as follows.
+^/share/info/dir
