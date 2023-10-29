@@ -90,11 +90,10 @@ def compile_cmake(configure_args, target, temp_destdir):
 
 def compile_meson(configure_args, target, temp_destdir):
     os.makedirs('build', exist_ok=True)
-    os.chdir('build')
-    subprocess.run(['meson', 'build'] + configure_args)
-    subprocess.run(['meson', 'configure', '-D', 'prefix=' + target])
+    subprocess.run(['meson', 'build'])
+    subprocess.run(['meson', 'configure', '-D', 'prefix=' + target] + configure_args)
     subprocess.run(['ninja', '-C', 'build'])
-    subprocess.run(['DESTDIR=' + temp_destdir, 'ninja', '-C', 'build', 'install'])
+    subprocess.run(['ninja', '-C', 'build', 'install'], env={'DESTDIR': temp_destdir})
     os.chdir('')
 
 
