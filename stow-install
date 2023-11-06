@@ -27,7 +27,9 @@ def main():
 
     target = args.target if args.target is not None else osp.join(os.environ['HOME'], '.local')
     source = args.source if args.source is not None else os.getcwd()
-    install(args.name, source, target, stow_dir, args.configure_args, args.bootstrap)
+
+    configure_args = args.configure_args[1:] if args.configure_args[0] == '--' else args.configure_args
+    install(args.name, source, target, stow_dir, configure_args, args.bootstrap)
 
 
 def install(name, source, target, stow_dir, configure_args, bootstrap):
@@ -64,7 +66,7 @@ def enter_source_dir(name, source):
 def extract_source(name, source):
     extraction_target = f'src_{name}'
     os.makedirs(extraction_target, exist_ok=True)
-    if source.endswith('.tar.gz'):
+    if source.endswith('.tar.gz') or source.endswith('.tar.xz'):
         with tarfile.open(source) as tar:
             first_member = tar.next()
             source_dir_in_archive = first_member.path.split('/')[0]
@@ -74,6 +76,7 @@ def extract_source(name, source):
 
 
 def compile_autotools(configure_args, target, temp_destdir):
+    print(configure_args)
     subprocess.run(['./configure', '--prefix=' + target] + configure_args)
     subprocess.run(['make', '-j', str(len(os.sched_getaffinity(0)))])
     subprocess.run(['make', 'install', 'DESTDIR=' + temp_destdir])
@@ -101,7 +104,7 @@ def extract_tar_from_url(name, response):
     extraction_target = f'src_{name}'
     os.makedirs(extraction_target, exist_ok=True)
 
-    with tarfile.open(fileobj=response, mode='r|gz') as tar:
+    with tarfile.open(fileobj=response, mode='r') as tar:
         first_member = tar.next()
         source_dir_in_archive = first_member.path.split('/')[0]
         tar.extractall(extraction_target)
