@@ -28,7 +28,9 @@ def main():
     target = args.target if args.target is not None else osp.join(os.environ['HOME'], '.local')
     source = args.source if args.source is not None else os.getcwd()
 
-    configure_args = args.configure_args[1:] if args.configure_args[0] == '--' else args.configure_args
+    configure_args = args.configure_args
+    if len(configure_args) > 0 and configure_args[0] == '--':
+        configure_args = configure_args[1:]
     install(args.name, source, target, stow_dir, configure_args, args.bootstrap)
 
 
