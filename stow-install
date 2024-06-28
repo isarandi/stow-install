@@ -106,7 +106,7 @@ def extract_tar_from_url(name, response):
     extraction_target = f'src_{name}'
     os.makedirs(extraction_target, exist_ok=True)
 
-    with tarfile.open(fileobj=response, mode='r') as tar:
+    with tarfile.open(fileobj=response, mode='r|*') as tar:
         first_member = tar.next()
         source_dir_in_archive = first_member.path.split('/')[0]
         tar.extractall(extraction_target)
