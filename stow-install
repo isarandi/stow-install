@@ -7,6 +7,7 @@ import tempfile
 import os.path as osp
 import cgi
 import tarfile
+import zipfile
 import urllib.request
 
 
@@ -37,14 +38,22 @@ def main():
 def install(name, source, target, stow_dir, configure_args, bootstrap):
     enter_source_dir(name, source)
 
+    # print(f'Entered source directory: {os.getcwd()}')
+
     with tempfile.TemporaryDirectory(dir=stow_dir) as temp_destdir:
+        print(f'Temporary destdir is: {temp_destdir}')
         if osp.isfile('CMakeLists.txt'):
             compile_cmake(configure_args, target, temp_destdir)
         elif osp.isfile('configure'):
             compile_autotools(configure_args, target, temp_destdir)
         elif osp.isfile('meson.build'):
             compile_meson(configure_args, target, temp_destdir)
+        elif osp.isfile('Makefile'):
+            compile_make(configure_args, target, temp_destdir)
+        else:
+             raise ValueError('Build system unknown')
 
+        # print('Moving from', osp.join(temp_destdir, osp.relpath(target, '/')), 'to', osp.join(stow_dir, name))
         shutil.move(osp.join(temp_destdir, osp.relpath(target, '/')), osp.join(stow_dir, name))
 
     stow_bin = osp.join(stow_dir, name, 'bin', 'stow') if bootstrap else 'stow'
@@ -56,8 +65,10 @@ def enter_source_dir(name, source):
         source = download_file(source)
 
     if osp.isdir(source):
+        print(f'Source {source} is a directory')
         os.chdir(source)
     elif osp.isfile(source):
+        print(f'Source {source} is a file')
         if not osp.isabs(source):
             source = osp.abspath(source)
         os.chdir(osp.dirname(source))
@@ -68,23 +79,39 @@ def enter_source_dir(name, source):
 def extract_source(name, source):
     extraction_target = f'src_{name}'
     os.makedirs(extraction_target, exist_ok=True)
+
     if source.endswith('.tar.gz') or source.endswith('.tar.xz'):
+        print(f'Extracting {source}')
         with tarfile.open(source) as tar:
             first_member = tar.next()
             source_dir_in_archive = first_member.path.split('/')[0]
             tar.extractall(extraction_target)
+    elif source.endswith('.zip'):
+        print(f'Extracting {source}')
+        with zipfile.ZipFile(source, 'r') as zip_ref:
+            first_member = zip_ref.namelist()[0]
+            source_dir_in_archive = first_member.split('/')[0]
+            zip_ref.extractall(extraction_target)
+    else:
+        raise ValueError(f'Cannot extract {source}, unsupported file type')
 
     return osp.join(extraction_target, source_dir_in_archive)
 
 
 def compile_autotools(configure_args, target, temp_destdir):
-    print(configure_args)
+    # print(f'Configuiring autotools with args:', configure_args)
     subprocess.run(['./configure', '--prefix=' + target] + configure_args)
     subprocess.run(['make', '-j', str(len(os.sched_getaffinity(0)))])
     subprocess.run(['make', 'install', 'DESTDIR=' + temp_destdir])
 
 
+def compile_make(configure_args, target, temp_destdir):
+    subprocess.run(['make', '-j', str(len(os.sched_getaffinity(0))), 'PREFIX=' + target])
+    subprocess.run(['make', 'install', 'DESTDIR=' + temp_destdir, 'PREFIX=' + target])
+
+
 def compile_cmake(configure_args, target, temp_destdir):
+    # print(f'Configuiring cmake with args:', configure_args)
     os.makedirs('build', exist_ok=True)
     os.chdir('build')
     subprocess.run(['cmake', '-DCMAKE_INSTALL_PREFIX=' + target] + configure_args + ['..'])
@@ -94,6 +121,7 @@ def compile_cmake(configure_args, target, temp_destdir):
 
 
 def compile_meson(configure_args, target, temp_destdir):
+    # print(f'Configuiring meson with args:', configure_args)
     os.makedirs('build', exist_ok=True)
     subprocess.run(['meson', 'build'])
     subprocess.run(['meson', 'configure', '-D', 'prefix=' + target] + configure_args)
@@ -115,6 +143,7 @@ def extract_tar_from_url(name, response):
 
 
 def download_file(url):
+    # print(f'Opening {url}...')
     with urllib.request.urlopen(url) as response:
         try:
             content_disposition = response.info()['Content-Disposition']
@@ -123,8 +152,10 @@ def download_file(url):
             filename = osp.basename(url)
 
         if filename.endswith('.tar.gz'):
+            # print(f'Streaming-extracting {filename}...')
             return extract_tar_from_url(osp.splitext(filename)[0], response)
 
+        # print(f'Downloading to {filename}...')
         with open(filename, 'wb') as out_file:
             shutil.copyfileobj(response, out_file)
 
