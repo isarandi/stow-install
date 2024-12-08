@@ -41,7 +41,7 @@ def install(name, source, target, stow_dir, configure_args, bootstrap):
     # print(f'Entered source directory: {os.getcwd()}')
 
     with tempfile.TemporaryDirectory(dir=stow_dir) as temp_destdir:
-        print(f'Temporary destdir is: {temp_destdir}')
+        # print(f'Temporary destdir is: {temp_destdir}')
         if osp.isfile('CMakeLists.txt'):
             compile_cmake(configure_args, target, temp_destdir)
         elif osp.isfile('configure'):
@@ -65,10 +65,10 @@ def enter_source_dir(name, source):
         source = download_file(source)
 
     if osp.isdir(source):
-        print(f'Source {source} is a directory')
+        # print(f'Source {source} is a directory')
         os.chdir(source)
     elif osp.isfile(source):
-        print(f'Source {source} is a file')
+        # print(f'Source {source} is a file')
         if not osp.isabs(source):
             source = osp.abspath(source)
         os.chdir(osp.dirname(source))
@@ -81,13 +81,13 @@ def extract_source(name, source):
     os.makedirs(extraction_target, exist_ok=True)
 
     if source.endswith('.tar.gz') or source.endswith('.tar.xz'):
-        print(f'Extracting {source}')
+        # print(f'Extracting {source}')
         with tarfile.open(source) as tar:
             first_member = tar.next()
             source_dir_in_archive = first_member.path.split('/')[0]
             tar.extractall(extraction_target)
     elif source.endswith('.zip'):
-        print(f'Extracting {source}')
+        # print(f'Extracting {source}')
         with zipfile.ZipFile(source, 'r') as zip_ref:
             first_member = zip_ref.namelist()[0]
             source_dir_in_archive = first_member.split('/')[0]
