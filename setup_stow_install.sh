@@ -6,3 +6,4 @@ popd
 echo '' >> ~/.bashrc
 cat .bashrc_stow >> ~/.bashrc
 cp stow-install ~/.local/bin_priority/
+cp .stow-global-ignore ~/
