@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Usage: cd to the source directory, then run:
-#   stow_install_autotools.sh <package-name> [configure-args...]
+# Usage: cd to the CMake source directory, then run:
+#   stow_install_cmake_bootstrap.sh <package-name> [bootstrap-args...]
+#
+# For building CMake itself without an existing cmake installation.
 #
 set -euo pipefail
 
@@ -9,7 +11,7 @@ shift
 
 TARGET=$HOME/.local
 
-./configure --prefix="$TARGET" "$@"
+./bootstrap --prefix="$TARGET" --parallel="$(nproc)" -- "$@"
 make -j "$(nproc)"
 
 TEMP_DESTDIR=$(mktemp --directory --tmpdir="$STOW_DIR")

@@ -1,0 +1,1 @@
+"""stow-install test suite."""

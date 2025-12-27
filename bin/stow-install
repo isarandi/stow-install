@@ -1,0 +1,333 @@
+#!/usr/bin/env python3
+import argparse
+import email.message
+import os
+import os.path as osp
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.request
+import zipfile
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--setup', action='store_true',
+                        help='Set up ~/.local directories and environment variables')
+    parser.add_argument('--name', type=str)
+    parser.add_argument('--source', type=str)
+    parser.add_argument('--target', type=str)
+    parser.add_argument('--stow-dir', type=str)
+    parser.add_argument('--prebuilt', action='store_true')
+    parser.add_argument('configure_args', nargs=argparse.REMAINDER)
+
+    args = parser.parse_args()
+
+    if args.setup:
+        setup()
+        return
+
+    if not args.name:
+        parser.error('--name is required')
+
+    stow_dir = args.stow_dir if args.stow_dir is not None else os.environ['STOW_DIR']
+
+    if osp.exists(osp.join(stow_dir, args.name)):
+        raise FileExistsError('Package already exists in stow directory')
+
+    target = args.target if args.target is not None else osp.join(os.environ['HOME'], '.local')
+    source = args.source if args.source is not None else os.getcwd()
+
+    configure_args = args.configure_args
+    if len(configure_args) > 0 and configure_args[0] == '--':
+        configure_args = configure_args[1:]
+    install(args.name, source, target, stow_dir, configure_args, args.prebuilt)
+
+
+def setup():
+    """Set up ~/.local directories and add environment variables to ~/.bashrc."""
+    home = os.environ['HOME']
+    target = osp.join(home, '.local')
+
+    # Create directory structure
+    print('Creating ~/.local directory structure...')
+    for d in LOCAL_DIRS:
+        os.makedirs(osp.join(target, d), exist_ok=True)
+
+    # Add to bashrc if not already present
+    bashrc_path = osp.join(home, '.bashrc')
+    marker = 'export STOW_DIR='
+
+    already_setup = False
+    if osp.exists(bashrc_path):
+        with open(bashrc_path) as f:
+            if marker in f.read():
+                already_setup = True
+
+    if already_setup:
+        print('Environment already configured in ~/.bashrc')
+    else:
+        print('Adding environment variables to ~/.bashrc...')
+        with open(bashrc_path, 'a') as f:
+            f.write('\n' + BASHRC_STOW)
+
+    # Create .stow-global-ignore if not present
+    ignore_path = osp.join(home, '.stow-global-ignore')
+    if osp.exists(ignore_path):
+        print('~/.stow-global-ignore already exists')
+    else:
+        print('Creating ~/.stow-global-ignore...')
+        with open(ignore_path, 'w') as f:
+            f.write(STOW_GLOBAL_IGNORE)
+
+    print('\nDone! Run this to apply changes:')
+    print('  source ~/.bashrc')
+
+
+def install(name, source, target, stow_dir, configure_args, prebuilt):
+    enter_source_dir(name, source)
+
+    if prebuilt:
+        shutil.move(os.getcwd(), osp.join(stow_dir, name))
+    else:
+        with tempfile.TemporaryDirectory(dir=stow_dir) as temp_destdir:
+            if osp.isfile('bootstrap') and osp.isfile('CMakeLists.txt'):
+                compile_cmake_bootstrap(configure_args, target, temp_destdir)
+            elif osp.isfile('CMakeLists.txt'):
+                compile_cmake(configure_args, target, temp_destdir)
+            elif osp.isfile('configure'):
+                compile_autotools(configure_args, target, temp_destdir)
+            elif osp.isfile('meson.build'):
+                compile_meson(configure_args, target, temp_destdir)
+            elif osp.isfile('Makefile'):
+                compile_make(configure_args, target, temp_destdir)
+            else:
+                raise ValueError('Build system unknown')
+
+            shutil.move(osp.join(temp_destdir, osp.relpath(target, '/')), osp.join(stow_dir, name))
+
+    subprocess.run(['stow', name, '--target=' + target], check=True)
+
+
+def enter_source_dir(name, source):
+    if source.startswith('http'):
+        source = download_file(source)
+
+    if osp.isdir(source):
+        os.chdir(source)
+    elif osp.isfile(source):
+        if not osp.isabs(source):
+            source = osp.abspath(source)
+        os.chdir(osp.dirname(source))
+        source = extract_source(name, source)
+        os.chdir(source)
+
+
+def download_file(url):
+    with urllib.request.urlopen(url) as response:
+        content_disposition = response.info().get('Content-Disposition')
+        filename = filename_from_content_disposition(
+            content_disposition) if content_disposition else None
+
+        if not filename:
+            filename = osp.basename(url)
+
+        total_size = response.info().get('Content-Length')
+        total_size = int(total_size) if total_size else None
+        progress = ProgressReader(response, total_size)
+
+        if filename.endswith(('.tar.gz', '.tar.xz', '.tar.bz2')):
+            name = re.sub(r'\.tar\.(gz|xz|bz2)$', '', filename)
+            return extract_tar_from_url(name, progress)
+
+        with open(filename, 'wb') as out_file:
+            while True:
+                chunk = progress.read(8192)
+                if not chunk:
+                    break
+                out_file.write(chunk)
+        progress.finish()
+
+    return filename
+
+
+def extract_tar_from_url(name, progress_reader):
+    extraction_target = f'src_{name}'
+    os.makedirs(extraction_target, exist_ok=True)
+
+    source_dir_in_archive = ''
+
+    with tarfile.open(fileobj=progress_reader, mode='r|*') as tar:
+        for i, member in enumerate(tar):
+            if i == 0:
+                source_dir_in_archive = member.path.split('/')[0]
+            tar.extract(member, extraction_target)
+
+    progress_reader.finish()
+    return osp.join(extraction_target, source_dir_in_archive)
+
+
+def filename_from_content_disposition(content_disposition):
+    m = email.message.Message()
+    m['Content-Disposition'] = content_disposition
+    return m.get_filename()
+
+
+def extract_source(name, source):
+    extraction_target = f'src_{name}'
+    os.makedirs(extraction_target, exist_ok=True)
+
+    if source.endswith(('.tar.gz', '.tar.xz', '.tar.bz2')):
+        with tarfile.open(source) as tar:
+            first_member = tar.next()
+            source_dir_in_archive = first_member.path.split('/')[0]
+            tar.extractall(extraction_target)
+    elif source.endswith('.zip'):
+        with zipfile.ZipFile(source, 'r') as zip_ref:
+            first_member = zip_ref.namelist()[0]
+            source_dir_in_archive = first_member.split('/')[0]
+            zip_ref.extractall(extraction_target)
+    else:
+        raise ValueError(f'Cannot extract {source}, unsupported file type')
+
+    return osp.join(extraction_target, source_dir_in_archive)
+
+
+def compile_cmake_bootstrap(configure_args, target, temp_destdir):
+    """For building CMake itself without an existing cmake."""
+    cmd = ['./bootstrap', '--prefix=' + target, '--parallel=' + str(len(os.sched_getaffinity(0)))]
+    if configure_args:
+        cmd += ['--'] + configure_args
+    subprocess.run(cmd, check=True)
+    subprocess.run(['make', '-j', str(len(os.sched_getaffinity(0)))], check=True)
+    subprocess.run(['make', 'install', 'DESTDIR=' + temp_destdir], check=True)
+
+
+def compile_cmake(configure_args, target, temp_destdir):
+    os.makedirs('build', exist_ok=True)
+    os.chdir('build')
+    subprocess.run(['cmake', '-DCMAKE_INSTALL_PREFIX=' + target] + configure_args + ['..'],
+                   check=True)
+    subprocess.run(['make', '-j', str(len(os.sched_getaffinity(0)))], check=True)
+    subprocess.run(['make', 'install', 'DESTDIR=' + temp_destdir], check=True)
+    os.chdir('..')
+
+
+def compile_autotools(configure_args, target, temp_destdir):
+    subprocess.run(['./configure', '--prefix=' + target] + configure_args, check=True)
+    subprocess.run(['make', '-j', str(len(os.sched_getaffinity(0)))], check=True)
+    subprocess.run(['make', 'install', 'DESTDIR=' + temp_destdir], check=True)
+
+
+def compile_meson(configure_args, target, temp_destdir):
+    os.makedirs('build', exist_ok=True)
+    subprocess.run(['meson', 'setup', 'build'], check=True)
+    subprocess.run(['meson', 'configure', 'build', f'-Dprefix={target}'] + configure_args, check=True)
+    subprocess.run(['ninja', '-C', 'build'], check=True)
+    subprocess.run(['ninja', '-C', 'build', 'install'],
+                   env={**os.environ, 'DESTDIR': temp_destdir}, check=True)
+
+
+def compile_make(configure_args, target, temp_destdir):
+    subprocess.run(['make', '-j', str(len(os.sched_getaffinity(0))), 'PREFIX=' + target],
+                   check=True)
+    subprocess.run(['make', 'install', 'DESTDIR=' + temp_destdir, 'PREFIX=' + target], check=True)
+
+
+class ProgressReader:
+    """Wrapper around a file-like object that displays download progress."""
+
+    def __init__(self, response, total_size=None):
+        self.response = response
+        self.total_size = total_size
+        self.bytes_read = 0
+
+    def read(self, size=-1):
+        data = self.response.read(size)
+        self.bytes_read += len(data)
+        self._print_progress()
+        return data
+
+    def _print_progress(self):
+        if self.total_size:
+            pct = self.bytes_read * 100 / self.total_size
+            bar_len = 30
+            filled = int(bar_len * self.bytes_read / self.total_size)
+            bar = '=' * filled + '-' * (bar_len - filled)
+            sys.stderr.write(
+                f'\rDownloading: [{bar}] {pct:5.1f}% ({self._fmt_size(self.bytes_read)}/'
+                f'{self._fmt_size(self.total_size)})')
+        else:
+            sys.stderr.write(f'\rDownloading: {self._fmt_size(self.bytes_read)}')
+        sys.stderr.flush()
+
+    def _fmt_size(self, n):
+        for unit in ('B', 'KB', 'MB', 'GB'):
+            if n < 1024:
+                return f'{n:.1f}{unit}'
+            n /= 1024
+        return f'{n:.1f}TB'
+
+    def finish(self):
+        sys.stderr.write('\n')
+        sys.stderr.flush()
+
+
+LOCAL_DIRS = [
+    'bin', 'bin_priority', 'doc', 'etc', 'games', 'include', 'info', 'lib',
+    'lib/cmake', 'lib/pkgconfig', 'lib32', 'lib64', 'lib64/cmake', 'lib64/pkgconfig',
+    'libexec', 'libx32', 'man', 'sbin', 'share', 'share/aclocal', 'share/applications',
+    'share/bash-completion', 'share/bash-completion/completions', 'share/icons',
+    'share/info', 'share/locale', 'share/man', 'src', 'stow', 'var'
+]
+
+# fmt: off
+BASHRC_STOW = '''\
+export STOW_DIR=$HOME/.local/stow
+
+export PATH=$HOME/.local/bin_priority:$HOME/.local/bin:$HOME/.local/sbin${PATH:+:${PATH}}
+export LD_LIBRARY_PATH=$HOME/.local/lib64:$HOME/.local/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
+export LD_RUN_PATH=$HOME/.local/lib64:$HOME/.local/lib${LD_RUN_PATH:+:${LD_RUN_PATH}}
+export LIBRARY_PATH=$HOME/.local/lib64:$HOME/.local/lib${LIBRARY_PATH:+:${LIBRARY_PATH}}
+export PKG_CONFIG_PATH=$HOME/.local/lib64/pkgconfig:$HOME/.local/lib/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}
+export CMAKE_PREFIX_PATH=$HOME/.local${CMAKE_PREFIX_PATH:+:${CMAKE_PREFIX_PATH}}
+export MANPATH=$HOME/.local/man:$HOME/.local/share/man:/usr/local/man:/usr/local/share/man:/usr/share/man${MANPATH:+:${MANPATH}}
+export INFOPATH=$HOME/.local/info:$HOME/.local/share/info${INFOPATH:+:${INFOPATH}}
+export ACLOCAL_PATH=$HOME/.local/share/aclocal${ACLOCAL_PATH:+:${ACLOCAL_PATH}}
+export CPATH=$HOME/.local/include${CPATH:+:${CPATH}}
+export XDG_DATA_DIRS=$HOME/.local/share${XDG_DATA_DIRS:+:${XDG_DATA_DIRS}}:/usr/local/share:/usr/share
+'''
+# fmt: on
+
+STOW_GLOBAL_IGNORE = '''\
+# Comments and blank lines are allowed.
+
+RCS
+.+,v
+
+CVS
+\\.\\#.+  # CVS conflict files / emacs lock files
+\\.cvsignore
+
+\\.svn
+_darcs
+\\.hg
+
+\\.git
+\\.gitignore
+
+.+~     # emacs backup files
+\\#.*\\#  # emacs autosave files
+
+^/README.*
+^/LICENSE.*
+^/COPYING
+
+^/share/info/dir
+'''
+
+if __name__ == '__main__':
+    main()
